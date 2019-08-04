@@ -43,11 +43,46 @@ vec3 chg_brightness(vec3 rgb, float adjustment) {
 	return rgb * adjustment;
 }
 
+// These two functions assume input and output are in the range [0..1]
+// See http://lolengine.net/blog/2013/07/27/rgb-to-hsv-in-glsl
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+/**
+ * Selectively dims brighter colors more than darker ones.
+ * Use https://alloyui.com/examples/color-picker/hsv.html to play with.
+ */
+vec3 chg_bright_brightness(vec3 rgb) {
+	vec3 hsv = rgb2hsv(rgb);
+	float curviness = 0.8;
+	float os = 0.80;  // offset
+	float curved_v = os + (hsv.z - os) * (1.0 - curviness * (hsv.z - os));
+	float line_v = 0.3 * (hsv.z - os) + os;
+	// use this to detect what pixel will be "nonlinearized"
+	float flat_v = 0.0;
+	float new_v = (hsv.z > os && hsv.y < 0.2 ? line_v : hsv.z);
+	vec3 dim_hsv = vec3(hsv.x, hsv.y, new_v);
+	return hsv2rgb(dim_hsv);
+}
+
 void main() {
 	vec4 c = texture2D(tex, gl_TexCoord[0].st);
 	// c = vec4(chg_saturation(vec3(c), 0.5), c.a);
 	// c = vec4(chg_contrast(vec3(c), 0.5), c.a);
-	c = vec4(chg_brightness(vec3(c), 0.2), c.a);
+	c = vec4(chg_brightness(vec3(c), 0.7), c.a);
+	// c = vec4(chg_bright_brightness(vec3(c)), c.a);
 	if (invert_color)
 		c = vec4(vec3(c.a, c.a, c.a) - vec3(c), c.a);
 	c *= opacity;
