@@ -1318,3 +1318,25 @@ c2_matchd(session_t *ps, win *w, const c2_lptr_t *condlst,
   return false;
 }
 
+/**
+ * @brief Call a handler for each condition in the given condition list.
+ *
+ * @param ps the session object
+ * @param pcondlst the condition list to iterate over
+ * @param handler the handler to call, with the condition data pointer passed
+ *                to it, when it returns <code>false</code> the loop terminates
+ *                and returns <code>false</code>
+ * @param extra_data the extra data pointer to pass to the handler
+ *
+ * @return <code>true</code> if all handler calls succeeded (returns
+ *         <code>true</code>, <code>false</code> otherwise
+ */
+bool
+c2_foreach_condition(session_t *ps, const c2_lptr_t *pcondlst,
+    bool (*handler)(session_t *ps, void *data, void *extra_data),
+    void *extra_data) {
+  for (const c2_lptr_t *p = pcondlst; p; p = p->next)
+    if (!handler(ps, p->data, extra_data))
+      return false;
+  return true;
+}

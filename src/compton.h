@@ -718,7 +718,7 @@ win_render(session_t *ps, win *w, int x, int y, int wid, int hei,
 
   render(ps, x, y, dx, dy, wid, hei, opacity, argb, neg,
       pict, (w ? w->paint.ptex: ps->root_tile_paint.ptex),
-      reg_paint, pcache_reg, (w ? &ps->o.glx_prog_win: NULL));
+      reg_paint, pcache_reg, (w ? (w->pcustom_prog ? w->pcustom_prog : &ps->o.glx_prog_win): NULL));
 }
 
 static inline void

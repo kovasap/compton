@@ -91,6 +91,7 @@
 #include <assert.h>
 #include <time.h>
 #include <ctype.h>
+#include <errno.h>
 #include <sys/time.h>
 
 #include <X11/Xlib.h>
@@ -199,6 +200,9 @@
 
 /// @brief Length of generic buffers.
 #define BUF_LEN 80
+
+/// @brief Length of file reading buffers.
+#define FILE_BUF_LEN 1024
 
 #define ROUNDED_PERCENT 0.05
 #define ROUNDED_PIXELS  10
@@ -504,6 +508,19 @@ typedef struct {
   .unifm_tex = -1, \
 }
 
+/// @brief GL program to draw windows, with source.
+typedef struct {
+  /// @brief The source string of the fragment shader.
+  char *fshader_str;
+  /// @brief The GLSL program data.
+  glx_prog_main_t prog;
+} glx_prog_main_src_t;
+
+#define GLX_PROG_MAIN_SRC_INIT { \
+  .fshader_str = NULL, \
+  .prog = GLX_PROG_MAIN_INIT \
+}
+
 #endif
 #endif
 
@@ -577,6 +594,9 @@ typedef struct _options_t {
 #ifdef CONFIG_VSYNC_OPENGL_GLSL
   /// Custom GLX program used for painting window.
   glx_prog_main_t glx_prog_win;
+  /// @brief Custom GLX program rules used for painting window.
+  /// TODO: Move the generated GL programs to session_t
+  c2_lptr_t *glx_prog_win_rules;
 #endif
   /// Whether to fork to background.
   bool fork_after_register;
@@ -1229,6 +1249,11 @@ typedef struct _win {
   bool blur_background_last;
 
 #ifdef CONFIG_VSYNC_OPENGL_GLSL
+  /// @brief The matched custom GLX window-painting program.
+  glx_prog_main_t *pcustom_prog;
+  /// @brief Cache of custom GLX window-painting program rules.
+  const c2_lptr_t *cache_gpmrule;
+
   /// Textures and FBO background blur use.
   glx_blur_cache_t glx_blur_cache;
 #endif
@@ -2153,6 +2178,11 @@ xr_glx_sync(session_t *ps, Drawable d, XSyncFence *pfence);
 bool
 glx_init(session_t *ps, bool need_render);
 
+#ifdef CONFIG_VSYNC_OPENGL_GLSL
+void
+glx_free_prog_main(session_t *ps, glx_prog_main_t *pprogram);
+#endif
+
 void
 glx_destroy(session_t *ps);
 
@@ -2502,6 +2532,12 @@ c2_matchd(session_t *ps, win *w, const c2_lptr_t *condlst,
 
 #define c2_match(ps, w, condlst, cache) c2_matchd((ps), (w), (condlst), \
     (cache), NULL)
+
+bool
+c2_foreach_condition(session_t *ps, const c2_lptr_t *pcondlst,
+    bool (*handler)(session_t *ps, void *data, void *extra_data),
+    void *extra_data);
+
 #endif
 
 ///@}
@@ -2561,6 +2597,50 @@ hexdump(const char *data, int len) {
     putchar('\n');
 
   fflush(stdout);
+}
+
+/**
+ * Read the contents of a file into a string.
+ *
+ * @param path the path of the file to read
+ *
+ * @return the contents of a file as a string, use <code>free()</code> when you
+ *         wish to free it
+ */
+static inline char *
+read_file_to_str(const char *path) {
+  // mmap() would be be better, but it does not produce a null-terminated
+  // string
+
+  FILE *f = fopen(path, "r");
+  if (!f) {
+    printf_errf("(\"%s\"): Failed to open file for reading: %d", path, errno);
+    return NULL;
+  }
+  int length = 0;
+  // We could predict the size of the buffer with stat(), but I don't know if
+  // there's a risk of meeting synchronization issues, and it may fail on
+  // special files
+  int buf_length = FILE_BUF_LEN + 1;
+  char *buf = cmalloc(buf_length, char);
+  for (int read_length = 0;
+      0 != (read_length = fread(&buf[length], 1, buf_length - length - 1, f));
+      ) {
+    length += read_length;
+    assert(length <= buf_length - 1);
+    if (likely(buf_length < length + FILE_BUF_LEN + 1)) {
+      buf_length += FILE_BUF_LEN;
+      buf = crealloc(buf, buf_length, char);
+    }
+    assert(buf_length >= length + FILE_BUF_LEN + 1);
+  }
+  if (ferror(f)) {
+    printf_errf("(\"%s\"): Failed to read file: %d", path, errno);
+    free(buf);
+    return NULL;
+  }
+  buf[length] = '\0';
+  return buf;
 }
 
 #endif

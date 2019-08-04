@@ -2599,6 +2599,31 @@ win_determine_blur_background(session_t *ps, win *w) {
 }
 
 /**
+ * @brief Update window-painting program of the given window according to GLX
+ *        custom window-painting program rules.
+ *
+ * @param session a pointer to the session object
+ * @param w a pointer to the window object to update
+ */
+static void
+win_update_glx_prog_main_rule(session_t *ps, win *w) {
+  if (IsViewable != w->a.map_state)
+    return;
+
+#ifdef CONFIG_C2
+  glx_prog_main_t *pcustom_prog_old = w->pcustom_prog;
+  w->pcustom_prog = NULL;
+  void *val = NULL;
+  if (c2_matchd(ps, w, ps->o.glx_prog_win_rules, &w->cache_gpmrule, &val)) {
+    glx_prog_main_src_t *pglx_prog_main_src = val;
+    w->pcustom_prog = &pglx_prog_main_src->prog;
+  }
+  if (pcustom_prog_old != w->pcustom_prog)
+    add_damage_win(ps, w);
+#endif
+}
+
+/**
  * Update window opacity according to opacity rules.
  */
 static void
@@ -2656,6 +2681,10 @@ win_on_factor_change(session_t *ps, win *w) {
     win_determine_blur_background(ps, w);
   if (ps->o.opacity_rules)
     win_update_opacity_rule(ps, w);
+#ifdef CONFIG_VSYNC_OPENGL_GLSL
+  if (ps->o.glx_prog_win_rules)
+    win_update_glx_prog_main_rule(ps, w);
+#endif
   if (IsViewable == w->a.map_state && ps->o.paint_blacklist)
     w->paint_excluded = win_match(ps, w, ps->o.paint_blacklist,
         &w->cache_pblst);
@@ -4814,6 +4843,10 @@ usage(int ret) {
     "  GLX backend: Use specified GLSL fragment shader for rendering window\n"
     "  contents.\n"
     "\n"
+    "--glx-prog-win-rule fragment-shader-path:condition\n"
+    "  GLX backend: Use the specified GLSL shader if the window condition\n"
+    "  matches on the window.\n"
+    "\n"
     "--force-win-blend\n"
     "  Force all windows to be painted with blending. Useful if you have a\n"
     "  --glx-fshader-win that could turn opaque pixels transparent.\n"
@@ -5299,6 +5332,49 @@ parse_rule_opacity(session_t *ps, const char *src) {
 #endif
 }
 
+/**
+ * Parse the given GLX custom window-painting program rule.
+ *
+ * @param src the string of the rule to parse
+ *
+ * @return <code>true</code> if successful, <code>false</code> otherwise
+ */
+static inline bool
+parse_rule_glx_prog_win(session_t *ps, const char *src) {
+#ifdef CONFIG_C2
+  // Find fragment shader path
+  char *endptr = strchr(src, ':');
+  if (!endptr || endptr == src) {
+    printf_errf("(\"%s\"): No fragment shader path found", src);
+    return false;
+  }
+  char *path = mstrncpy(src, endptr - src);
+  ++endptr;
+
+  // Read the shader
+  char *fshader_str = read_file_to_str(path);
+  free(path);
+  path = NULL;
+  if (!fshader_str)
+    return false;
+
+  // Construct the structure
+  glx_prog_main_src_t *pprog_src = cmalloc(1, glx_prog_main_src_t);
+  {
+    static const glx_prog_main_src_t GLX_PROG_MAIN_SRC_DEF =
+      GLX_PROG_MAIN_SRC_INIT;
+    memcpy(pprog_src, &GLX_PROG_MAIN_SRC_DEF, sizeof(GLX_PROG_MAIN_SRC_DEF));
+  }
+  pprog_src->fshader_str = fshader_str;
+
+  // Parse pattern
+  return c2_parsed(ps, &ps->o.glx_prog_win_rules, endptr, pprog_src);
+#else
+  printf_errf("(\"%s\"): Condition support not compiled in.", src);
+  return false;
+#endif
+}
+
 #ifdef CONFIG_LIBCONFIG
 /**
  * Get a file stream of the configuration file to read.
@@ -5758,6 +5834,7 @@ get_cfg(session_t *ps, int argc, char *const *argv, bool first_pass) {
     { "no-name-pixmap", no_argument, NULL, 320 },
     { "reredir-on-root-change", no_argument, NULL, 731 },
     { "glx-reinit-on-root-change", no_argument, NULL, 732 },
+    { "glx-prog-win-rule", required_argument, NULL, 1769 },
     // Must terminate with a NULL entry
     { NULL, 0, NULL, 0 },
   };
@@ -6029,6 +6106,11 @@ get_cfg(session_t *ps, int argc, char *const *argv, bool first_pass) {
       P_CASEBOOL(319, no_x_selection);
       P_CASEBOOL(731, reredir_on_root_change);
       P_CASEBOOL(732, glx_reinit_on_root_change);
+      case 1769:
+        // --glx-prog-win-rule
+        if (!parse_rule_glx_prog_win(ps, optarg))
+          exit(1);
+        break;
       default:
         usage(1);
         break;
@@ -6938,6 +7020,37 @@ cxinerama_upd_scrs(session_t *ps) {
 #endif
 }
 
+#ifdef CONFIG_VSYNC_OPENGL_GLSL
+
+/**
+ * @brief c2_foreach_condition() handler to initialize a GLX custom
+ *        window-painting program rule.
+ */
+static bool
+init_rule_glx_prog_main_handler(session_t *ps, void *data, void *extra_data) {
+  glx_prog_main_src_t *glx_prog_main_src = data;
+  return glx_load_prog_main(ps, NULL, glx_prog_main_src->fshader_str,
+      &glx_prog_main_src->prog);
+}
+
+/**
+ * @brief c2_foreach_condition() handler to free resources in a GLX custom
+ *        window-painting program rule.
+ */
+static bool
+free_rule_glx_prog_main_handler(session_t *ps, void *data, void *extra_data) {
+  glx_prog_main_src_t *glx_prog_main_src = data;
+
+  free(glx_prog_main_src->fshader_str);
+  glx_prog_main_src->fshader_str = NULL;
+  glx_free_prog_main(ps, &glx_prog_main_src->prog);
+  free(glx_prog_main_src);
+
+  return true;
+}
+
+#endif
+
 /**
  * Initialize a session.
  *
@@ -7340,6 +7453,15 @@ session_init(session_t *ps_old, int argc, char **argv) {
 #endif
   }
 
+  // Initialize window GL shader rules
+#ifdef CONFIG_VSYNC_OPENGL_GLSL
+  if (BKEND_GLX == ps->o.backend && ps->o.glx_prog_win_rules) {
+    if (!c2_foreach_condition(ps, ps->o.glx_prog_win_rules,
+          init_rule_glx_prog_main_handler, NULL))
+      exit(1);
+  }
+#endif
+
   // Initialize software optimization
   if (ps->o.sw_opti)
     ps->o.sw_opti = swopti_init(ps);
@@ -7522,6 +7644,11 @@ session_destroy(session_t *ps) {
   free_wincondlst(&ps->o.opacity_rules);
   free_wincondlst(&ps->o.paint_blacklist);
   free_wincondlst(&ps->o.unredir_if_possible_blacklist);
+#ifdef CONFIG_VSYNC_OPENGL_GLSL
+  c2_foreach_condition(ps, ps->o.glx_prog_win_rules,
+      free_rule_glx_prog_main_handler, NULL);
+  free_wincondlst(&ps->o.glx_prog_win_rules);
+#endif
 #endif
 
   // Free tracked atom list

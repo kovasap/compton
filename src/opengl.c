@@ -279,7 +279,7 @@ glx_init_end:
 
 #ifdef CONFIG_VSYNC_OPENGL_GLSL
 
-static void
+void
 glx_free_prog_main(session_t *ps, glx_prog_main_t *pprogram) {
   if (!pprogram)
     return;
